@@ -62,6 +62,8 @@ end
 local tick = 1 / 10 -- 1/10
 local resendTick = 0
 
+local messageDelay = 0.1 -- 1ms delay between messages
+
 local function getApereanceColor(sequence)
     local apper = sequence["APPEARANCE"]
     if apper ~= nil then
@@ -83,6 +85,70 @@ local function getMasterEnabled(masterName)
         return true
     else
         return false
+    end
+end
+
+local function sendAllValues(destPage)
+    -- Get all Executors
+    local executors = DataPool().Pages[destPage]:Children()
+    
+    -- Send Master Enabled states
+    for masterKey, _ in pairs(olsMasterEnabledValue) do
+        local currValue = getMasterEnabled(masterKey)
+        Cmd('SendOSC ' .. oscEntry .. ' "/masterEnabled/' .. masterKey .. ',i,' .. (currValue and 1 or 0))
+        olsMasterEnabledValue[masterKey] = currValue
+        coroutine.yield(messageDelay)
+    end
+    
+    -- Send all executor values
+    for _, listValue in pairs(executorsToWatch) do
+        local faderValue = 0
+        local buttonValue = false
+        local colorValue = "0,0,0,0"
+        local nameValue = ";"
+        
+        -- Get current values
+        for _, maValue in pairs(executors) do
+            if maValue.No == listValue then
+                local faderOptions = {}
+                faderOptions.value = faderEnd
+                faderOptions.token = "FaderMaster"
+                faderOptions.faderDisabled = false
+                
+                faderValue = maValue:GetFader(faderOptions)
+                
+                local myobject = maValue.Object
+                if myobject ~= nil then
+                    buttonValue = myobject:HasActivePlayback() and true or false
+                    colorValue = getApereanceColor(myobject)
+                    nameValue = getName(myobject)
+                end
+            end
+        end
+        
+        -- Send all values with delays between each message
+        Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Fader' .. listValue .. ',i,' .. (faderValue * 1.27) .. '"')
+        coroutine.yield(messageDelay)
+        
+        Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Button' .. listValue .. ',s,' .. (buttonValue and "On" or "Off") .. '"')
+        coroutine.yield(messageDelay)
+        
+        if sendColors then
+            local newValue = string.gsub(colorValue, ",", ";")
+            Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Color' .. listValue .. ',s,' .. newValue .. '"')
+            coroutine.yield(messageDelay)
+        end
+        
+        if sendNames then
+            Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Name' .. listValue .. ',s,' .. nameValue .. '"')
+            coroutine.yield(messageDelay)
+        end
+        
+        -- Update stored values
+        oldValues[listValue] = faderValue
+        oldButtonValues[listValue] = buttonValue
+        oldColorValues[listValue] = colorValue
+        oldNameValues[listValue] = nameValue
     end
 end
 
@@ -149,71 +215,7 @@ local function main()
             Cmd('SendOSC ' .. oscEntry .. ' "/updatePage/current,i,' .. destPage)
         end
 
-        -- Get all Executors
-        local executors = DataPool().Pages[destPage]:Children()
-
-        for listKey, listValue in pairs(executorsToWatch) do
-            local faderValue = 0
-            local buttonValue = false
-            local colorValue = "0,0,0,0"
-            local nameValue = ";"
-            local isFlash = false
-
-            -- Set Fader & button Values
-            for maKey, maValue in pairs(executors) do
-                if maValue.No == listValue then
-                    local faderOptions = {}
-                    faderOptions.value = faderEnd
-                    faderOptions.token = "FaderMaster"
-                    faderOptions.faderDisabled = false
-
-                    faderValue = maValue:GetFader(faderOptions)
-                    isFlash = maValue.KEY == "Flash"
-
-                    local myobject = maValue.Object
-                    if myobject ~= nil then
-                        buttonValue = myobject:HasActivePlayback() and true or false
-                        if sendColors then
-                            colorValue = getApereanceColor(myobject)
-                        end
-                        if sendNames then
-                            nameValue = getName(myobject)
-                        end
-                    end
-
-                end
-            end
-
-            -- Send Fader Value
-            if (oldValues[listKey] ~= faderValue and not (isFlash and buttonValue and faderValue == 100)) or forceReload then
-                hasFaderUpdated = true
-                oldValues[listKey] = faderValue
-                Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Fader' .. listValue .. ',i,' ..
-                        (faderValue * 1.27) .. '"')
-            end
-
-            -- Send Button Value
-            if oldButtonValues[listKey] ~= buttonValue or forceReload or forceReloadButtons then
-                oldButtonValues[listKey] = buttonValue
-                Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Button' .. listValue .. ',s,' ..
-                        (buttonValue and "On" or "Off") .. '"')
-            end
-
-            -- Send Color Value
-            if sendColors and (oldColorValues[listKey] ~= colorValue or forceReload) then
-                oldColorValues[listKey] = colorValue
-                local newValue = string.gsub(colorValue, ",", ";")
-                Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Color' .. listValue .. ',s,' .. newValue ..
-                        '"')
-            end
-
-            -- Send Name Value
-            if sendNames and (oldNameValues[listKey] ~= nameValue or forceReload) then
-                oldNameValues[listKey] = nameValue
-                Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Name' .. listValue .. ',s,' .. nameValue ..
-                        '"')
-            end
-        end
+        sendAllValues(destPage)
         
         -- Send Timecode
         if sendTimecode then
