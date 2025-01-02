@@ -15,7 +15,7 @@ local oldValues = {}
 local oldButtonValues = {}
 local oldColorValues = {}
 local oldNameValues = {}
-local olsMasterEnabledValue = {
+local oldMasterEnabledValues = {
     highlight = false,
     lowlight = false,
     solo = false,
@@ -24,221 +24,174 @@ local olsMasterEnabledValue = {
 local oldTimecodes = {}
 
 local oscEntry = 2
-
--- Configure here, what executors you want to watch:
-for i = 101, 122 do
-    executorsToWatch[#executorsToWatch + 1] = i
-end
-
-for i = 201, 222 do
-    executorsToWatch[#executorsToWatch + 1] = i
-end
-
-for i = 301, 322 do
-    executorsToWatch[#executorsToWatch + 1] = i
-end
-
-for i = 401, 422 do
-    executorsToWatch[#executorsToWatch + 1] = i
-end
-
-for i = 191, 198 do
-    executorsToWatch[#executorsToWatch + 1] = i
-end
-
-for i = 291, 298 do
-    executorsToWatch[#executorsToWatch + 1] = i
-end
-
--- set the default Values
-for _, number in ipairs(executorsToWatch) do
-    oldValues[number] = "000"
-    oldButtonValues[number] = false
-    oldColorValues[number] = "0,0,0,0"
-    oldNameValues[number] = ";"
-end
-
--- the Speed to check executors
-local tick = 1 / 10 -- 1/10
-local resendTick = 0
-
 local messageDelay = 0.01 -- 1ms delay between messages
+local tick = 1/10 -- Main loop tick rate
 
-local function getApereanceColor(sequence)
-    local apper = sequence["APPEARANCE"]
-    if apper ~= nil then
-        return apper['BACKR'] .. "," .. apper['BACKG'] .. "," .. apper['BACKB'] .. "," .. apper['BACKALPHA']
-    else
+-- Configure executors to watch
+local function setupExecutorsToWatch()
+    -- Page 1
+    for i = 101, 122 do executorsToWatch[#executorsToWatch + 1] = i end
+    for i = 191, 198 do executorsToWatch[#executorsToWatch + 1] = i end
+    -- Page 2
+    for i = 201, 222 do executorsToWatch[#executorsToWatch + 1] = i end
+    for i = 291, 298 do executorsToWatch[#executorsToWatch + 1] = i end
+    -- Page 3
+    for i = 301, 322 do executorsToWatch[#executorsToWatch + 1] = i end
+    -- Page 4
+    for i = 401, 422 do executorsToWatch[#executorsToWatch + 1] = i end
+end
+
+-- Helper functions
+local function getAppearanceColor(sequence)
+    if not sequence or not sequence["APPEARANCE"] then
         return "255,255,255,255"
     end
+    local app = sequence["APPEARANCE"]
+    return string.format("%s,%s,%s,%s", 
+        app['BACKR'], app['BACKG'], app['BACKB'], app['BACKALPHA'])
 end
 
 local function getName(sequence)
-    if sequence["CUENAME"] ~= nil then
-        return sequence["NAME"] .. ";" .. sequence["CUENAME"]
-    end
-    return sequence["NAME"] .. ";"
+    if not sequence then return ";" end
+    local cueName = sequence["CUENAME"] or ""
+    return sequence["NAME"] .. ";" .. cueName
 end
 
 local function getMasterEnabled(masterName)
-    if MasterPool()['Grand'][masterName]['FADERENABLED'] then
-        return true
-    else
-        return false
+    return MasterPool()['Grand'][masterName]['FADERENABLED'] or false
+end
+
+-- Send a single OSC message with coroutine yield
+local function sendOSC(path, value)
+    Cmd(string.format('SendOSC %d "%s,%s"', oscEntry, path, value))
+    coroutine.yield(messageDelay)
+end
+
+-- Process and send executor values
+local function processExecutor(executor, destPage)
+    if not executor then return end
+    
+    local number = executor.No
+    local faderValue = 0
+    local buttonValue = false
+    local colorValue = "0,0,0,0"
+    local nameValue = ";"
+    
+    -- Get current values
+    local faderOptions = {
+        value = faderEnd,
+        token = "FaderMaster",
+        faderDisabled = false
+    }
+    faderValue = executor:GetFader(faderOptions)
+    
+    local obj = executor.Object
+    if obj then
+        buttonValue = obj:HasActivePlayback()
+        colorValue = getAppearanceColor(obj)
+        nameValue = getName(obj)
+    end
+    
+    -- Send values if changed or forced
+    local basePath = string.format("/Page%d", destPage)
+    
+    if oldValues[number] ~= faderValue then
+        sendOSC(basePath .. "/Fader" .. number, "i," .. math.floor(faderValue * 127))
+        oldValues[number] = faderValue
+    end
+    
+    if oldButtonValues[number] ~= buttonValue then
+        sendOSC(basePath .. "/Button" .. number, "s," .. (buttonValue and "On" or "Off"))
+        oldButtonValues[number] = buttonValue
+    end
+    
+    if GetVar(GlobalVars(), "sendColors") and oldColorValues[number] ~= colorValue then
+        sendOSC(basePath .. "/Color" .. number, "s," .. string.gsub(colorValue, ",", ";"))
+        oldColorValues[number] = colorValue
+    end
+    
+    if GetVar(GlobalVars(), "sendNames") and oldNameValues[number] ~= nameValue then
+        sendOSC(basePath .. "/Name" .. number, "s," .. nameValue)
+        oldNameValues[number] = nameValue
     end
 end
 
-local function sendAllValues(destPage)
-    -- Get all Executors
-    local executors = DataPool().Pages[destPage]:Children()
-    
-    -- Send Master Enabled states
-    for masterKey, _ in pairs(olsMasterEnabledValue) do
-        local currValue = getMasterEnabled(masterKey)
-        Cmd('SendOSC ' .. oscEntry .. ' "/masterEnabled/' .. masterKey .. ',i,' .. (currValue and 1 or 0))
-        olsMasterEnabledValue[masterKey] = currValue
-        coroutine.yield(messageDelay)
-    end
-    
-    -- Send all executor values
-    for _, listValue in pairs(executorsToWatch) do
-        local faderValue = 0
-        local buttonValue = false
-        local colorValue = "0,0,0,0"
-        local nameValue = ";"
-        
-        -- Get current values
-        for _, maValue in pairs(executors) do
-            if maValue.No == listValue then
-                local faderOptions = {}
-                faderOptions.value = faderEnd
-                faderOptions.token = "FaderMaster"
-                faderOptions.faderDisabled = false
-                
-                faderValue = maValue:GetFader(faderOptions)
-                
-                local myobject = maValue.Object
-                if myobject ~= nil then
-                    buttonValue = myobject:HasActivePlayback() and true or false
-                    colorValue = getApereanceColor(myobject)
-                    nameValue = getName(myobject)
-                end
-            end
-        end
-        
-        -- Send all values with delays between each message
-        Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Fader' .. listValue .. ',i,' .. (faderValue * 1.27) .. '"')
-        coroutine.yield(messageDelay)
-        
-        Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Button' .. listValue .. ',s,' .. (buttonValue and "On" or "Off") .. '"')
-        coroutine.yield(messageDelay)
-        
-        if sendColors then
-            local newValue = string.gsub(colorValue, ",", ";")
-            Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Color' .. listValue .. ',s,' .. newValue .. '"')
-            coroutine.yield(messageDelay)
-        end
-        
-        if sendNames then
-            Cmd('SendOSC ' .. oscEntry .. '  "/Page' .. destPage .. '/Name' .. listValue .. ',s,' .. nameValue .. '"')
-            coroutine.yield(messageDelay)
-        end
-        
-        -- Update stored values
-        oldValues[listValue] = faderValue
-        oldButtonValues[listValue] = buttonValue
-        oldColorValues[listValue] = colorValue
-        oldNameValues[listValue] = nameValue
-    end
-end
-
+-- Main function
 local function main()
-    local automaticResendButtons = GetVar(GlobalVars(), "automaticResendButtons") or false
-    local sendColors = GetVar(GlobalVars(), "sendColors") or false
-    local sendNames = GetVar(GlobalVars(), "sendNames") or false
-    local sendTimecode = GetVar(GlobalVars(), "sendTimecode") or false
-
-    Printf("start pam OSC main()")
-    Printf("automaticResendButtons: " .. (automaticResendButtons and "true" or "false"))
-    Printf("sendColors: " .. (sendColors and "true" or "false"))
-    Printf("sendNames: " .. (sendNames and "true" or "false"))
-    Printf("sendTimecode: " .. (sendTimecode and "true" or "false"))
-
-    local destPage = 1
-    local forceReload = true
-    local forceReloadButtons = false
-
-    if GetVar(GlobalVars(), "opdateOSC") ~= nil then
-        SetVar(GlobalVars(), "opdateOSC", not GetVar(GlobalVars(), "opdateOSC"))
-    else
-        SetVar(GlobalVars(), "opdateOSC", true)
+    -- Initialize
+    setupExecutorsToWatch()
+    
+    -- Get initial settings
+    local settings = {
+        automaticResendButtons = GetVar(GlobalVars(), "automaticResendButtons") or false,
+        sendColors = GetVar(GlobalVars(), "sendColors") or false,
+        sendNames = GetVar(GlobalVars(), "sendNames") or false,
+        sendTimecode = GetVar(GlobalVars(), "sendTimecode") or false
+    }
+    
+    Printf("Starting pam-OSC")
+    for k, v in pairs(settings) do
+        Printf(k .. ": " .. tostring(v))
     end
 
-    while (GetVar(GlobalVars(), "opdateOSC")) do
-        if GetVar(GlobalVars(), "forceReload") == true then
-            forceReload = true
-            automaticResendButtons = GetVar(GlobalVars(), "automaticResendButtons") or false
-            sendColors = GetVar(GlobalVars(), "sendColors") or false
-            sendNames = GetVar(GlobalVars(), "sendNames") or false
-            sendTimecode = GetVar(GlobalVars(), "sendTimecode") or false
+    -- Set up update flag
+    if GetVar(GlobalVars(), "updateOSC") == nil then
+        SetVar(GlobalVars(), "updateOSC", true)
+    end
+
+    local currentPage = CurrentExecPage().index
+    local forceUpdate = true
+
+    -- Main loop
+    while GetVar(GlobalVars(), "updateOSC") do
+        -- Check for settings updates
+        if GetVar(GlobalVars(), "forceReload") then
+            forceUpdate = true
+            for k in pairs(settings) do
+                settings[k] = GetVar(GlobalVars(), k) or false
+            end
             SetVar(GlobalVars(), "forceReload", false)
         end
 
-        if automaticResendButtons then
-            resendTick = resendTick + 1
-        end
-        if resendTick >= 15 then
-            forceReloadButtons = true
-            resendTick = 0
+        -- Check page changes
+        local newPage = CurrentExecPage().index
+        if newPage ~= currentPage then
+            currentPage = newPage
+            forceUpdate = true
+            sendOSC("/updatePage/current", "i," .. currentPage)
         end
 
-        -- Check Master Enabled Values
-        for masterKey, masterValue in pairs(olsMasterEnabledValue) do
-            local currValue = getMasterEnabled(masterKey)
-            if currValue ~= masterValue then
-                Cmd('SendOSC ' .. oscEntry .. ' "/masterEnabled/' .. masterKey .. ',i,' .. (currValue and 1 or 0))
-                olsMasterEnabledValue[masterKey] = currValue
+        -- Process executors
+        local executors = DataPool().Pages[currentPage]:Children()
+        for _, executor in pairs(executors) do
+            if executor and executor.No then
+                processExecutor(executor, currentPage)
             end
         end
 
-        -- Check Page
-        local myPage = CurrentExecPage()
-        if myPage.index ~= destPage then
-            destPage = myPage.index
-            for maKey, maValue in pairs(oldValues) do
-                oldValues[maKey] = 000
+        -- Process master enabled states
+        for masterName, oldValue in pairs(oldMasterEnabledValues) do
+            local currentValue = getMasterEnabled(masterName)
+            if currentValue ~= oldValue or forceUpdate then
+                sendOSC("/masterEnabled/" .. masterName, "i," .. (currentValue and 1 or 0))
+                oldMasterEnabledValues[masterName] = currentValue
             end
-            for maKey, maValue in pairs(oldButtonValues) do
-                oldButtonValues[maKey] = false
-            end
-            forceReload = true
-            Cmd('SendOSC ' .. oscEntry .. ' "/updatePage/current,i,' .. destPage)
         end
 
-        sendAllValues(destPage)
-        
-        -- Send Timecode
-        if sendTimecode then
-            local slots = Root().TimecodeSlots
-                
-            for _, slot in pairs(slots:Children()) do
+        -- Process timecode if enabled
+        if settings.sendTimecode then
+            for _, slot in pairs(Root().TimecodeSlots:Children()) do
                 local time = slot.timestring
-                
-                if oldTimecodes[slot.no] ~= time or oldTimecodes[slot.no] == nil or forceReload == true then
+                if oldTimecodes[slot.no] ~= time or forceUpdate then
+                    sendOSC("/Timecode" .. slot.no, "s," .. time)
                     oldTimecodes[slot.no] = time
-                        
-                    Cmd('SendOSC ' .. oscEntry .. ' "/Timecode' .. slot.no .. ',s,' .. time .. '"')
                 end
             end
         end
-        
-        forceReload = false
-        forceReloadButtons = false
 
-        -- delay
+        forceUpdate = false
         coroutine.yield(tick)
     end
-
 end
 
 return main
