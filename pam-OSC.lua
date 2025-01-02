@@ -62,7 +62,7 @@ end
 local tick = 1 / 10 -- 1/10
 local resendTick = 0
 
-local messageDelay = 0.1 -- 1ms delay between messages
+local messageDelay = 0.01 -- 1ms delay between messages
 
 local function getApereanceColor(sequence)
     local apper = sequence["APPEARANCE"]
