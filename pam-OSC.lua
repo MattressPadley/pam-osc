@@ -69,10 +69,12 @@ end
 
 -- Helper function to map values to 0-127 range
 local function mapTo127(value)
+    -- Convert any value to 0-1 range first
+    value = value / 100
     -- Ensure value is between 0 and 1
     value = math.max(0, math.min(1, value))
     -- Map to 0-127 range
-    return math.floor(value * 127 + 0.5)
+    return math.floor(value * 127)
 end
 
 -- Send a mass update for all executors on a page
@@ -95,19 +97,19 @@ local function sendMassUpdate(destPage)
         local buttonValue = false
         local colorValue = "0,0,0,0"
         local nameValue = ";"
+        local isFlash = false
         
         -- Find the executor
         for _, executor in pairs(executors) do
             if executor.No == execNumber then
-                -- Get fader value
-                local faderOptions = {
-                    value = faderEnd,
-                    token = "FaderMaster",
-                    faderDisabled = false
-                }
-                faderValue = executor:GetFader(faderOptions)
+                local faderOptions = {}
+                faderOptions.value = faderEnd
+                faderOptions.token = "FaderMaster"
+                faderOptions.faderDisabled = false
                 
-                -- Get other values
+                faderValue = executor:GetFader(faderOptions)
+                isFlash = executor.KEY == "Flash"
+                
                 local obj = executor.Object
                 if obj then
                     buttonValue = obj:HasActivePlayback()
@@ -119,19 +121,11 @@ local function sendMassUpdate(destPage)
             end
         end
         
-        -- Get and normalize fader value
-        if type(faderValue) == "number" then
-            faderValue = math.max(0, math.min(1, faderValue))
-        else
-            faderValue = 0
-        end
-        
         -- Send all values for this executor
         local basePath = string.format("/Page%d", destPage)
         
-        -- Always send in mass update with proper mapping
-        local mappedValue = mapTo127(faderValue)
-        sendOSC(basePath .. "/Fader" .. execNumber, "i," .. mappedValue)
+        -- Use original scaling method
+        sendOSC(basePath .. "/Fader" .. execNumber, "i," .. math.floor(faderValue * 1.27))
         sendOSC(basePath .. "/Button" .. execNumber, "s," .. (buttonValue and "On" or "Off"))
         
         if GetVar(GlobalVars(), "sendColors") then
@@ -164,24 +158,18 @@ local function processExecutor(executor, destPage)
     if not executor then return end
     
     local number = executor.No
-    local faderValue = 0
     local buttonValue = false
     local colorValue = "0,0,0,0"
     local nameValue = ";"
     
-    -- Get current values
-    local faderOptions = {
-        value = faderEnd,
-        token = "FaderMaster",
-        faderDisabled = false
-    }
-    -- Get and normalize fader value
-    faderValue = executor:GetFader(faderOptions)
-    if type(faderValue) == "number" then
-        faderValue = math.max(0, math.min(1, faderValue))
-    else
-        faderValue = 0
-    end
+    -- Get current values using the original method
+    local faderOptions = {}
+    faderOptions.value = faderEnd
+    faderOptions.token = "FaderMaster"
+    faderOptions.faderDisabled = false
+    
+    local faderValue = executor:GetFader(faderOptions)
+    local isFlash = executor.KEY == "Flash"
     
     local obj = executor.Object
     if obj then
@@ -193,9 +181,9 @@ local function processExecutor(executor, destPage)
     -- Send values if changed
     local basePath = string.format("/Page%d", destPage)
     
+    -- Use the original scaling factor of 1.27 (which maps 0-100 to 0-127)
     if oldValues[number] ~= faderValue then
-        local mappedValue = mapTo127(faderValue)
-        sendOSC(basePath .. "/Fader" .. number, "i," .. mappedValue)
+        sendOSC(basePath .. "/Fader" .. number, "i," .. math.floor(faderValue * 1.27))
         oldValues[number] = faderValue
     end
     
